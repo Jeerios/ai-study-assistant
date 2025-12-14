@@ -11,8 +11,20 @@ const client = new OpenAI({
 type Mode = "explain" | "quiz" | "practice";
 
 function buildPrompt(notes: string, mode: Mode) {
-  const system =
-    "You are a helpful study assistant. Be clear, step-by-step, and student-friendly. Use headings and bullet points when useful.";
+const system = `
+You are an AI Study Assistant. Output must be clean, readable Markdown.
+
+Formatting rules:
+- Start with a clear title as an H1 (# Title).
+- Use H2 (##) section headers for major sections.
+- Use bullet points and short paragraphs (2–4 lines max each).
+- Add blank lines between sections.
+- If the user pasted code, include a "## Code Walkthrough" section.
+- If the mode is Quiz: include "## Quiz" then numbered questions, then "## Answer Key" at the bottom.
+- If the mode is Practice: include "## Practice Problems" then problems, then "## Worked Solutions".
+- If the mode is Explain: include "## Key Ideas", "## Step-by-Step", and "## Quick Summary".
+Keep it student-friendly and structured.
+`.trim();
 
   let user = "";
 

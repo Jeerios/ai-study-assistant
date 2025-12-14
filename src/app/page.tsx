@@ -32,6 +32,9 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const HISTORY_KEY = "ai_study_assistant_history_v1";
   const [focusOutput, setFocusOutput] = useState(false);
+  const [scanStatus, setScanStatus] = useState<string>("");
+  const [scanProgress, setScanProgress] = useState<number>(0);
+
 
 
 
@@ -88,44 +91,147 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
 
 
+async function ocrPdfToText(file: File) {
+  // 1) Dynamically import browser-only libs
+  const pdfjsLib = await import("pdfjs-dist");
+  const { createWorker } = await import("tesseract.js");
 
-    async function handleFileUpload(file: File) {
+  // 2) Use your local worker file for PDF.js
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+
+  // 3) Load PDF
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+
+  // 4) Start OCR worker (English by default; can add others)
+  const worker = await createWorker("eng");
+
+  let fullText = "";
+
+  try {
+    // OCR all pages with a time estimate
+const totalPages = pdf.numPages;
+setScanProgress(0);
+
+for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+  setScanStatus(`Image scanning page ${pageNum} / ${totalPages}…`);
+  setScanProgress(Math.round(((pageNum - 1) / totalPages) * 100));
+
+  const page = await pdf.getPage(pageNum);
+
+  const viewport = page.getViewport({ scale: 2.0 });
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+
+  if (!ctx) continue;
+
+  await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+
+  const dataUrl = canvas.toDataURL("image/png");
+  const result = await worker.recognize(dataUrl);
+
+  fullText += (result.data.text || "") + "\n\n";
+}
+
+setScanProgress(100);
+setScanStatus("Image scanning complete.");
+
+  } finally {
+    await worker.terminate();
+  }
+
+  return fullText.trim();
+}
+
+
+
+function estimateScanTime(numPages: number) {
+  // Rough estimate: 6–10 seconds per page depending on hardware & PDF complexity.
+  // We’ll use 8 sec/page as a middle estimate + 10 sec overhead.
+  const seconds = numPages * 8 + 10;
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return { seconds, minutes };
+}
+
+
+async function getPdfPageCount(file: File) {
+  const pdfjsLib = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+  return pdf.numPages;
+}
+
+
+
+
+
+
+
+async function handleFileUpload(file: File) {
   setError("");
 
   const name = file.name.toLowerCase();
 
+  // -------- TXT FILES --------
   if (name.endsWith(".txt")) {
     const text = await file.text();
     setNotes(text);
     return;
   }
 
+  // -------- PDF FILES --------
   if (name.endsWith(".pdf")) {
-  setLoading(true);
-  setError("");
-  setOutput("");
+    setLoading(true);
+    setOutput("");
+    setError("");
+    setScanStatus("");
+    setScanProgress(0);
 
-  try {
-    const text = await extractTextFromPdf(file);
+    try {
+      // 1) Try normal text extraction first
+      const text = await extractTextFromPdf(file);
 
-    if (!text || text.length < 10) {
-      setError("Couldn’t extract much text from that PDF. Try a different PDF or export as text.");
+      // 2) If text is too short, assume scanned PDF → image scanning
+      if (!text || text.length < 50) {
+        // Get page count for time estimate
+        const pages = await getPdfPageCount(file);
+
+        // Rough estimate: ~8 sec per page + overhead
+        const estSeconds = pages * 8 + 10;
+        const estMinutes = Math.max(1, Math.round(estSeconds / 60));
+
+        setScanStatus(
+          `Scanned PDF detected — starting image scanning (~${estMinutes} min)…`
+        );
+
+        // IMPORTANT: this must be your actual scanning function name
+        const scannedText = await ocrPdfToText(file);
+
+        setNotes(scannedText);
+        return;
+      }
+
+      // 3) Normal selectable-text PDF
+      setNotes(text);
       return;
+    } catch (e: any) {
+      setError(e?.message || "Failed to read PDF.");
+      return;
+    } finally {
+      setLoading(false);
+      setScanStatus("");
+      setScanProgress(0);
     }
-
-    setNotes(text);
-  } catch (e: any) {
-    setError(e?.message || "Failed to read PDF.");
-  } finally {
-    setLoading(false);
   }
 
-  return;
-}
-
-
+  // -------- UNSUPPORTED FILE --------
   setError("Please upload a .txt or .pdf file.");
 }
+
 
 
   async function handleRun() {
@@ -183,7 +289,7 @@ setHistory((prev) => [item, ...prev].slice(0, 20));
           </div>
 
           <h1 className="mt-4 text-3xl md:text-4xl font-bold tracking-tight">
-            AI Study Assistant
+            AI Study Assistant - Jaidon Prakash
           </h1>
           <p className="mt-2 text-zinc-300 max-w-2xl">
             Paste your notes, choose a mode, and generate explanations, quizzes, or practice problems.
@@ -242,6 +348,21 @@ setHistory((prev) => [item, ...prev].slice(0, 20));
                 <p className="text-xs text-zinc-500 mt-2">
                   Minimum: 10 characters. Your key stays on the server (not in the browser).
                 </p>
+                {scanStatus && (
+  <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-sm text-zinc-200">
+    <div className="flex items-center justify-between gap-3">
+      <span>{scanStatus}</span>
+      <span className="text-xs text-zinc-400">{scanProgress}%</span>
+    </div>
+    <div className="mt-2 h-2 w-full rounded bg-zinc-800 overflow-hidden">
+      <div
+        className="h-full bg-emerald-500"
+        style={{ width: `${scanProgress}%` }}
+      />
+    </div>
+  </div>
+)}
+
               </div>
 
                 <div className="flex items-center gap-3">
@@ -258,8 +379,6 @@ setHistory((prev) => [item, ...prev].slice(0, 20));
                 }}
                 />
             </label>
-
-    <span className="text-xs text-zinc-500">TXT works now • PDF next step</span>
     </div>
 
 
@@ -349,11 +468,101 @@ setHistory((prev) => [item, ...prev].slice(0, 20));
                     </p>
                   </div>
                 ) : output ? (
-                    <div className="prose prose-invert max-w-none prose-p:leading-7 prose-li:my-1 prose-pre:bg-zinc-950/60 prose-pre:border prose-pre:border-zinc-800 prose-pre:rounded-xl prose-pre:p-4 prose-code:text-emerald-300 prose-strong:text-zinc-100 prose-headings:text-zinc-100">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {output}
-                    </ReactMarkdown>
-                    </div>
+<div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-6">
+  <div className="max-w-none text-zinc-100">
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        h1: ({ children }) => (
+          <h1 className="text-3xl font-bold tracking-tight text-zinc-100 mb-4 mt-2">
+            {children}
+          </h1>
+        ),
+        h2: ({ children }) => (
+          <h2 className="text-2xl font-semibold tracking-tight text-zinc-100 mt-8 mb-3">
+            {children}
+          </h2>
+        ),
+        h3: ({ children }) => (
+          <h3 className="text-xl font-semibold text-zinc-100 mt-6 mb-2">
+            {children}
+          </h3>
+        ),
+        p: ({ children }) => (
+          <p className="text-[15px] leading-7 text-zinc-100 my-3">
+            {children}
+          </p>
+        ),
+        ul: ({ children }) => (
+          <ul className="list-disc pl-6 my-4 space-y-2">{children}</ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="list-decimal pl-6 my-4 space-y-2">{children}</ol>
+        ),
+        li: ({ children }) => (
+          <li className="text-[15px] leading-7 text-zinc-100">{children}</li>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-4 border-emerald-500/60 bg-zinc-950/40 px-4 py-3 rounded-xl my-4 text-zinc-200">
+            {children}
+          </blockquote>
+        ),
+code: ({ className, children, ...props }) => {
+  const isBlock = typeof className === "string" && className.includes("language-");
+
+  if (!isBlock) {
+    // inline code
+    return (
+      <code
+        className="px-1.5 py-0.5 rounded-md bg-zinc-900/70 border border-zinc-800 text-emerald-300 text-[13px]"
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  }
+
+  // code block (handled mostly by <pre>, but keep this safe)
+  return (
+    <code className="text-[13px] text-zinc-100" {...props}>
+      {children}
+    </code>
+  );
+},
+
+        pre: ({ children }) => (
+          <pre className="my-5 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4 leading-6">
+            {children}
+          </pre>
+        ),
+        hr: () => <hr className="my-8 border-zinc-800" />,
+        table: ({ children }) => (
+          <div className="my-5 overflow-x-auto">
+            <table className="w-full text-sm border border-zinc-800 rounded-xl overflow-hidden">
+              {children}
+            </table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-zinc-900/60 text-zinc-100">{children}</thead>
+        ),
+        th: ({ children }) => (
+          <th className="text-left px-3 py-2 border-b border-zinc-800">
+            {children}
+          </th>
+        ),
+        td: ({ children }) => (
+          <td className="px-3 py-2 border-b border-zinc-900 text-zinc-200">
+            {children}
+          </td>
+        ),
+      }}
+    >
+      {output}
+    </ReactMarkdown>
+  </div>
+</div>
+
 
                 ) : (
                   <div className="text-zinc-400">
