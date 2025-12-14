@@ -10,8 +10,12 @@
   },
   "dependencies": {
     "next": "16.0.10",
+    "openai": "^6.10.0",
+    "pdfjs-dist": "^5.4.449",
     "react": "19.2.1",
-    "react-dom": "19.2.1"
+    "react-dom": "19.2.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
